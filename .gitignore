@@ -1,0 +1,10 @@
+.venv/
+__pycache__/
+*.pyc
+.env
+*.jsonl
+*.db
+.pytest_cache/
+data/chroma.db/
+data/lora_qwen_custoer/
+.idea/
