@@ -5,14 +5,10 @@ from langgraph.types import Command
 
 from app.core.refund_agent import build_refund_graph, init_state
 
-# 统一的假数据
-MOCK_RAG_RESULT = "[refund.txt] 模拟知识库：未发货可直接退款，已发货需退货后退款。"
 
 
 @pytest.mark.asyncio
-@patch("app.core.refund_agent.search_knowledge")  # 拦截函数调用
-async def test_small_refund_no_approval(mock_search):
-    mock_search.return_value = MOCK_RAG_RESULT
+async def test_small_refund_no_approval():
     app = build_refund_graph(checkpointer=MemorySaver())
     config = {"configurable": {"thread_id": "test_small"}}
 
@@ -26,9 +22,8 @@ async def test_small_refund_no_approval(mock_search):
 
 
 @pytest.mark.asyncio
-@patch("app.core.refund_agent.search_knowledge")
-async def test_large_refund_needs_approval(mock_search):
-    mock_search.return_value = MOCK_RAG_RESULT
+async def test_large_refund_needs_approval():
+
     app = build_refund_graph(checkpointer=MemorySaver())
     config = {"configurable": {"thread_id": "test_large"}}
 
@@ -40,9 +35,7 @@ async def test_large_refund_needs_approval(mock_search):
 
 
 @pytest.mark.asyncio
-@patch("app.core.refund_agent.search_knowledge")
-async def test_large_refund_approved(mock_search):
-    mock_search.return_value = MOCK_RAG_RESULT
+async def test_large_refund_approved():
     app = build_refund_graph(checkpointer=MemorySaver())
     config = {"configurable": {"thread_id": "test_approve"}}
 
@@ -58,9 +51,8 @@ async def test_large_refund_approved(mock_search):
 
 
 @pytest.mark.asyncio
-@patch("app.core.refund_agent.search_knowledge")
-async def test_large_refund_rejected(mock_search):
-    mock_search.return_value = MOCK_RAG_RESULT
+
+async def test_large_refund_rejected():
     app = build_refund_graph(checkpointer=MemorySaver())
     config = {"configurable": {"thread_id": "test_reject"}}
 
@@ -76,9 +68,7 @@ async def test_large_refund_rejected(mock_search):
 
 
 @pytest.mark.asyncio
-@patch("app.core.refund_agent.search_knowledge")
-async def test_prompt_injection_blocked(mock_search):
-    mock_search.return_value = MOCK_RAG_RESULT
+async def test_prompt_injection_blocked():
     app = build_refund_graph(checkpointer=MemorySaver())
     config = {"configurable": {"thread_id": "test_inject"}}
 
