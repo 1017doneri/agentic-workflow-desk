@@ -1,6 +1,10 @@
 import sys
 from unittest.mock import MagicMock
 
+
+mock_rag=MagicMock()
+
+mock_rag.search_knowledge.return_value="[refund.txt]模拟知识库：未发货可直接退款，已发货需到货后退款。"
 sys.modules["app.core.rag"]=MagicMock()
 
 import pytest
