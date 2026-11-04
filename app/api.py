@@ -15,6 +15,7 @@ from psycopg_pool import AsyncConnectionPool
 from mcp import ClientSession,StdioServerParameters
 from mcp.client.stdio import stdio_client
 from langchain_mcp_adapters.tools import load_mcp_tools
+from app.core.supervisor_agent import build_supervisor_graph
 
 from app.core.refund_agent import(
 RefundState,
@@ -32,13 +33,14 @@ should_continue,
 setup_tools
 )
 
-agent=None
+customer_agent=None
 refund_agent=None
+supervisor_agent=None
 
 
 @asynccontextmanager
 async def lifespan(app:FastAPI):
-    global agent,refund_agent
+    global customer_agent,refund_agent,supervisor_agent
     env=os.environ.copy()
     env["PYTHONIOENCODING"]="utf-8"
 
@@ -70,8 +72,9 @@ async def lifespan(app:FastAPI):
                 graph.add_conditional_edges("call_llm", should_continue)
                 graph.add_edge("run_tools", "call_llm")
 
-                agent=graph.compile(checkpointer=checkpointer)
+                customer_agent=graph.compile(checkpointer=checkpointer)
                 refund_agent=build_refund_graph(checkpointer=checkpointer)
+                supervisor_agent=build_supervisor_graph(checkpointer=checkpointer)
                 print("Agent初始化完成")
 
                 yield
@@ -87,12 +90,48 @@ class ChatRequest(BaseModel):
 class ChatResponse(BaseModel):
     answer:str
 
+
+@app.post("/agent",response_mode=ChatResponse)
+async def agent_chat(req:ChatRequest):
+    config={"configurable":{"thread_id":f"agent_{req.user_id}"}}
+    result=await supervisor_agent.ainvoke(
+        {
+            "messages":[HumanMessage(content=req.question)],
+            "next":""
+        },
+        config
+    )
+
+    if "__interrupt__" in result:
+        info=result["__interrupt__"][0].value
+        return ChatResponse(
+            answer=f"[需要审批]{info.get('question','请审批')}\n政策核对：{info.get('policy_result','')}",
+            needs_approval=True
+        )
+    return ChatResponse(
+        answer=result.get("worker_result",result["messages"][-1].content),
+    )
+
+
+class ApprovalRequest(BaseModel):
+    user_id:str
+    decision:str
+
+@app.post("/agent/approval",response_model=ChatResponse)
+async def agent_approval(req:ApprovalRequest):
+    config={"configurable":{"thread_id":f"approval_{req.user_id}"}}
+    result=await supervisor_agent.ainvoke(
+        Command(resume=req.question),
+        config
+    )
+    return ChatResponse(answer=result.get("worker_result","处理完成"))
+
 @app.post("/chat",response_model=ChatResponse)
 async def chat(req:ChatRequest):
     config={"configurable":{"thread_id":req.user_id}}
     request_id=str(uuid.uuid4())[:8]
 
-    result=await agent.ainvoke(
+    result=await customer_agent.ainvoke(
         {
             "messages":[HumanMessage(content=req.question)],
             "step":0,
