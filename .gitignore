@@ -8,3 +8,8 @@ __pycache__/
 data/chroma.db/
 data/lora_qwen_custoer/
 .idea/
+.env
+.venv/
+__pycache__/
+*.pyc
+.cache/

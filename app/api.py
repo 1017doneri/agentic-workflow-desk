@@ -39,6 +39,31 @@ customer_agent=None
 refund_agent=None
 supervisor_agent=None
 
+import jwt
+from datetime import datetime,timedelta,timezone
+from fastapi import Depends,HTTPException,status
+from fastapi.security import OAuth2PasswordBearer,OAuth2PasswordRequestForm
+from argon2 import PasswordHasher
+SECRET_KEY=os.getenv("JWT_SECRET_KEY","dev-secret-change-in-production")
+ALGORITHM="HS256"
+ACCESS_TOKEN_EXPIPE_MINUTES=60*24
+
+ph=PasswordHasher()
+oauth_scheme=OAuth2PasswordBearer(tokenUrl="/auth/login")
+
+USERS_DB={}
+
+def hash_password(password:str)->str:
+    return ph.hash(password)
+
+def verify_password(plain:str,hashed:str)->bool:
+    try:
+        return ph.verity(hashed,plain)
+    except Exception:
+        return False
+
+def create_access_token(user_id:str)->str:
+
 
 @asynccontextmanager
 async def lifespan(app:FastAPI):
