@@ -6,6 +6,7 @@ from contextlib import asynccontextmanager
 if sys.platform=="win32":
     asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
 
+import traceback
 from fastapi import FastAPI
 from pydantic import BaseModel
 from langchain_core.messages import HumanMessage
@@ -16,7 +17,8 @@ from mcp import ClientSession,StdioServerParameters
 from mcp.client.stdio import stdio_client
 from langchain_mcp_adapters.tools import load_mcp_tools
 from app.core.supervisor_agent import build_supervisor_graph
-
+import json
+from fastapi.responses import StreamingResponse
 from app.core.refund_agent import(
 RefundState,
 build_refund_graph,
@@ -24,7 +26,7 @@ init_state
 )
 from langgraph.types import Command
 
-from app.config import DB_URL
+
 from app.core.customer_agent import(
 AgentState,
 call_llm,
@@ -58,7 +60,7 @@ async def lifespan(app:FastAPI):
             setup_tools(tools)
 
             async with AsyncConnectionPool(
-                conninfo=DB_URL,
+                conninfo=os.getenv("DATABASE_URL","postgressql://postgres:postgres@localhost:5432/langgraph"),
                 max_size=20,
                 kwargs={"autocommit":True,"prepare_threshold":0}
             ) as pool:
@@ -91,7 +93,7 @@ class ChatResponse(BaseModel):
     answer:str
 
 
-@app.post("/agent",response_mode=ChatResponse)
+@app.post("/agent",response_model=ChatResponse)
 async def agent_chat(req:ChatRequest):
     config={"configurable":{"thread_id":f"agent_{req.user_id}"}}
     result=await supervisor_agent.ainvoke(
@@ -119,12 +121,16 @@ class ApprovalRequest(BaseModel):
 
 @app.post("/agent/approval",response_model=ChatResponse)
 async def agent_approval(req:ApprovalRequest):
-    config={"configurable":{"thread_id":f"approval_{req.user_id}"}}
+    config={"configurable":{"thread_id":f"agent_{req.user_id}"}}
     result=await supervisor_agent.ainvoke(
-        Command(resume=req.question),
+        Command(resume=req.decision),
         config
     )
     return ChatResponse(answer=result.get("worker_result","处理完成"))
+
+def sse_pack(event:str,data:dict)->str:
+    return f"event:{event}\ndata:{json.dumps(data,ensure_ascii=False)}\n\n"
+
 
 @app.post("/chat",response_model=ChatResponse)
 async def chat(req:ChatRequest):
@@ -182,3 +188,55 @@ async def refund_approval(req:RefundApprovalRequest):
         config
     )
     return RefundResponse(answer=result["final_result"])
+
+@app.post("/agent/stream")
+async def agent_stream(req:ChatRequest):
+    thread_id=f"agent_{req.user_id}"
+
+    async def event_generator():
+        config={"configurable":{"thread_id":thread_id}}
+        try:
+            input_state={
+                "messages":[HumanMessage(content=req.question)],
+                "next":""
+            }
+            async for mode,data in supervisor_agent.astream(
+                input_state,
+                config,
+                stream_mode=["messages","updates"],
+            ):
+                if mode =="messages":
+                    msg_chunk,metadata=data
+
+                    
+                    text=getattr(msg_chunk,"content","")
+                    if text:
+                        yield sse_pack("token",{"text":text})
+
+                elif mode=="updates":
+                    if "__interrupt__" in data:
+                        info=data["__interrupt__"][0].value
+                        yield sse_pack("interrupt",{
+                            "question":info.get("question","请审批"),
+                            "policy_result":info.get("policy_result",""),
+                        })
+            state=await supervisor_agent.aget_state(config)
+            if not state.tasks or not state.tasks[0].interrupts:
+                answer=state.values.get("worker_result","")
+                if not answer and state.values.get("messages"):
+                    answer=state.values["messages"][-1].content
+                yield sse_pack("done",{"answer":answer})
+
+        except Exception as e:
+            traceback.print_exc()
+            yield sse_pack("error",{"message":str(e)})
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "X-Accel-Buffering": "no",
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+        },
+    )

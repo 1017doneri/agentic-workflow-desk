@@ -1,8 +1,8 @@
-OPENAI_API_KEY=sk-........
+OPENAI_API_KEY=
 OPENAI_URL=https://api.deepseek.com/v1
-
-#Postgre数据库配置
-DB_URL=postgresql://postgres:agent123@localhost:5432/agentdb?sslmode=disable
-
-#业务相关配置
-APPROVAL_THRESHOLD=500
+LANGFUSE_SECRET_KEY=
+LANGFUSE_PUBLIC_KEY=
+LANGFUSE_BASE_URL=
+DB_USER=
+DB_PASSWORD=
+DB_NAME=
