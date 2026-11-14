@@ -2,7 +2,7 @@ name: Build and Push Docker Images
 
 on:
   push:
-    branches:[main]
+    branches: [main]
   workflow_dispatch:
 
 env:
@@ -13,8 +13,8 @@ jobs:
   build-and-push:
     runs-on: ubuntu-latest
     permissions:
-      contents:read
-      packages:write
+      contents: read
+      packages: write
 
     strategy:
       matrix:
@@ -25,25 +25,25 @@ jobs:
             dockerfile: Dockerfile.ui
 
 
-steps:
-  - name: Checkout
-    uses: actions/checkout@v4
+  steps:
+    - name: Checkout
+      uses: actions/checkout@v4
 
-  - name: Set up Docker Buildx
-    uses: docker/setup-buildx-action@v3
-    with:
-      registry: ${{ env.REGISTRY }}
-      usernsme: ${{ github.actor }}
-      password: ${{ secrets.GITHUB_YOKEN }}
+    - name: Set up Docker Buildx
+      uses: docker/setup-buildx-action@v3
+      with:
+        registry: ${{ env.REGISTRY }}
+        usernsme: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_YOKEN }}
 
-  - name: Build and push ${{ matrix.name }}
-    uses: docker/build-push-action@v5
-    with:
-      content: .
-      file: ${{ matrix.dockerfile }}
-      push: true
-      tags: |
-        ${{ env.REGISTRY }}/${{ env.IMAGE_PREFIX }}-${{ matrix.name }}:latest
-        ${{ env.REGISTRY }}/${{ env.IMAGE_PREFIX }}-${{ matrxi.name }}:${{ github.sha }}
-      cache-from: type=gha
-      cache-to: type=gha,mode=max
+    - name: Build and push ${{ matrix.name }}
+      uses: docker/build-push-action@v5
+      with:
+        content: .
+        file: ${{ matrix.dockerfile }}
+        push: true
+        tags: |
+          ${{ env.REGISTRY }}/${{ env.IMAGE_PREFIX }}-${{ matrix.name }}:latest
+          ${{ env.REGISTRY }}/${{ env.IMAGE_PREFIX }}-${{ matrxi.name }}:${{ github.sha }}
+        cache-from: type=gha
+        cache-to: type=gha,mode=max
