@@ -10,7 +10,35 @@ env:
   IMAGE_PREFIX: ${{ github.repository }}
 
 jobs:
+  test:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: langgraph
+        ports: [ "5432:5432" ]
+        options: >-
+          --heslth-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+      - uses: action/checkout@v4
+      - uses: action/setup-python@v5
+        with:
+          python-version: "3.14"
+      - run: pip install uv && uv sync
+      - run: uv run pytest -m "not slow" -v
+        env:
+          TEST_DATABASE_URL: postgresql://postgres:postgres@localhost:5432/langgraph
+          JWT_SECRET_KEY: ci-test-secret-not-for-production
+
+
   build-and-push:
+    needs: test
     runs-on: ubuntu-latest
     permissions:
       contents: read

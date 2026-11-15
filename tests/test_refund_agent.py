@@ -5,7 +5,7 @@ from langgraph.types import Command
 
 from app.core.refund_agent import build_refund_graph, init_state
 
-
+pytestmark=pytest.mark.slow
 
 @pytest.mark.asyncio
 async def test_small_refund_no_approval():
