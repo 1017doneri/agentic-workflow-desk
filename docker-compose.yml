@@ -30,6 +30,7 @@ services:
     environment:
       DATABASE_URL: postgresql://${DB_USER:-postgres}:${DB_PASSWORD:-postgres}@postgres:5432/${DB_NAME:-langgraph}
       HF_HUB_OFFLINE: "1"
+      JWT_SECRET_KEY: ${JWT_SECRET_KEY}
     volumes:
       - C:/Users/zzy/.cache/huggingface:/root/.cache/huggingface:ro
     ports:

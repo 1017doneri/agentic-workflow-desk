@@ -20,10 +20,12 @@ def call_agent(prompt:str,thread_id:str)->str:
     return data
 
 def stream_agent(prompt:str,thread_id:str)->str:
+    headers = {"Authorization": f"Bearer {st.session_state.token}"}
     with httpx.stream(
         "POST",
         f"{API_BASE}/agent/stream",
-        json={"question":prompt,"user_id":thread_id},
+        json={"question":prompt},
+        headers=headers,
         timeout=None
     )as response:
         if response.status_code!=200:
@@ -59,9 +61,11 @@ def stream_agent(prompt:str,thread_id:str)->str:
 
 
 def resume_agent(user_id:str,decision:str):
+    headers = {"Authorization": f"Bearer {st.session_state.token}"}
     resp=httpx.post(
         f"{API_BASE}/agent/approval",
-        json={"user_id":user_id,"decision":decision},
+        json={"decision":decision},
+        headers=headers,
         timeout=120
     )
     if resp.status_code!=200:
@@ -92,26 +96,68 @@ def resume_agent(user_id:str,decision:str):
     st.rerun()
 
 
-st.title("Agentic Workflow Desk")
-
-if "messages" not in st.session_state:
-    st.session_state.messages=[]
-
-for msg in st.session_state.messages:
-    with st.chat_message(msg["role"]):
-        st.markdown(msg["content"])
 
 st.set_page_config(page_title="Agent Workflow Desk",page_icon="🤖")
 st.title("Agent Workflow Desk")
 
+if"token" not in st.session_state:
+    st.session_state.token=None
+if"user_id" not in st.session_state:
+    st.session_state.user_id=None
+
+def login_page():
+    mode=st.radio("模式",["登录","注册"],horizontal=True)
+    with st.form("auth_form"):
+        username=st.text_input("用户名")
+        password=st.text_input("密码",type="password")
+        submitted=st.form_submit_button("提交")
+
+    if submitted:
+        st.write(f"DEBUG: submitted={submitted}, mode={mode!r}, username={username!r}, password_len={len(password)}")
+        if not username or not password:
+            st.error("用户名和密码不能为空")
+            return
+        if mode=="登录":
+            resp=httpx.post(
+                f"{API_BASE}/auth/login",
+                data={"username":username,"password":password},
+            )
+            if resp.status_code == 200:
+                data = resp.json()
+                st.session_state.token = data["access_token"]
+                st.session_state.user_id = data["user_id"]
+                st.rerun()
+            else:
+                st.error(resp.text)
+        else:
+            resp=httpx.post(
+                f"{API_BASE}/auth/register",
+                json={"username":username,"password":password}
+            )
+            if resp.status_code==200:
+                st.success("注册成功，请切换到[登录]")
+            else:
+                st.error(f"注册失败:{resp.text}")
+
+
+if not st.session_state.token:
+    login_page()
+    st.stop()
+
+with st.sidebar:
+    st.caption(f"当前用户:{st.session_state.user_id}")
+    if st.button("退出登录"):
+        st.session_state.clear()
+        st.rerun()
+
 if "messages" not in st.session_state:
     st.session_state.messages=[]
-if "user_id" not in st.session_state:
-    st.session_state.user_id="demo-user-001"
+
 
 for msg in st.session_state.messages:
     with st.chat_message(msg["role"]):
-        st.markdown(msg["content"])
+        if not msg["content"]==None:
+          st.markdown(msg["content"])
         if msg.get("needs_approval"):
             st.warning("这笔退款需要人工审批")
             col1,col2=st.columns(2)

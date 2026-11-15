@@ -6,6 +6,9 @@ from contextlib import asynccontextmanager
 if sys.platform=="win32":
     asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
 
+import psycopg
+from psycopg.rows import dict_row
+from psycopg_pool import AsyncConnectionPool
 import traceback
 from fastapi import FastAPI
 from pydantic import BaseModel
@@ -44,25 +47,6 @@ from datetime import datetime,timedelta,timezone
 from fastapi import Depends,HTTPException,status
 from fastapi.security import OAuth2PasswordBearer,OAuth2PasswordRequestForm
 from argon2 import PasswordHasher
-SECRET_KEY=os.getenv("JWT_SECRET_KEY","dev-secret-change-in-production")
-ALGORITHM="HS256"
-ACCESS_TOKEN_EXPIPE_MINUTES=60*24
-
-ph=PasswordHasher()
-oauth_scheme=OAuth2PasswordBearer(tokenUrl="/auth/login")
-
-USERS_DB={}
-
-def hash_password(password:str)->str:
-    return ph.hash(password)
-
-def verify_password(plain:str,hashed:str)->bool:
-    try:
-        return ph.verity(hashed,plain)
-    except Exception:
-        return False
-
-def create_access_token(user_id:str)->str:
 
 
 @asynccontextmanager
@@ -70,7 +54,6 @@ async def lifespan(app:FastAPI):
     global customer_agent,refund_agent,supervisor_agent
     env=os.environ.copy()
     env["PYTHONIOENCODING"]="utf-8"
-
     server_params=StdioServerParameters(
         command=sys.executable,
         args=["-m","app.mcp.server"],
@@ -85,12 +68,13 @@ async def lifespan(app:FastAPI):
             setup_tools(tools)
 
             async with AsyncConnectionPool(
-                conninfo=os.getenv("DATABASE_URL","postgressql://postgres:postgres@localhost:5432/langgraph"),
+                conninfo=os.getenv("DATABASE_URL","postgresql://postgres:postgres@localhost:5432/langgraph"),
                 max_size=20,
-                kwargs={"autocommit":True,"prepare_threshold":0}
+                kwargs={"autocommit":True,"prepare_threshold":0,"row_factory":dict_row}
             ) as pool:
                 checkpointer=AsyncPostgresSaver(pool)
                 await checkpointer.setup()
+                await init_user_db(pool)
 
                 graph=StateGraph(AgentState)
                 graph.add_node("call_llm",call_llm)
@@ -105,10 +89,98 @@ async def lifespan(app:FastAPI):
                 print("Agent初始化完成")
 
                 yield
+                if user_pool:
+                    await user_pool.close()
 
     print("Agent关闭")
 
 app=FastAPI(lifespan=lifespan)
+
+SECRET_KEY = os.getenv("JWT_SECRET_KEY", "dev-secret-change-in-production")
+ALGORITHM = "HS256"
+ACCESS_TOKEN_EXPIRE_MINUTES = 60 * 24
+
+ph = PasswordHasher()
+oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/auth/login")
+
+user_pool: AsyncConnectionPool|None=None
+
+async def init_user_db(pool:AsyncConnectionPool|None=None):
+    global user_pool
+    user_pool=pool
+    async with pool.connection() as conn:
+        await conn.execute("""
+           CREATE TABLE IF NOT EXISTS users(
+           username  TEXT PRIMARY KEY,
+           hashed_password TEXT NOT NULL,
+           created_at TIMESTAMPTZ DEFAULT now()
+           )
+        """)
+        await conn.commit()
+
+def create_access_token(user_id: str) -> str:
+    expire = datetime.now(timezone.utc) + timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+    return jwt.encode({"sub": user_id, "exp": expire}, SECRET_KEY, algorithm=ALGORITHM)
+
+async def get_current_user(token: str = Depends(oauth2_scheme)) -> str:
+    exc = HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="Invalid credentials",
+        headers={"WWW-Authenticate": "Bearer"},
+    )
+    try:
+        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+        user_id = payload.get("sub")
+        if not user_id:
+            raise exc
+        return user_id
+    except jwt.PyJWTError:
+        raise exc
+
+
+class RegisterRequest(BaseModel):
+    username: str
+    password: str
+
+
+@app.post("/auth/register")
+async def register(req: RegisterRequest):
+    try:
+        async with user_pool.connection() as conn:
+            await conn.execute(
+                "INSERT INTO users (username,hashed_password) VALUES (%s,%s)",
+                (req.username,ph.hash(req.password)),
+            )
+            await conn.commit()
+    except psycopg.errors.UniqueViolation:
+        raise HTTPException(400,"User already exists")
+    return {"status":"ok","user_id":req.username}
+
+@app.post("/auth/login")
+async def login(form: OAuth2PasswordRequestForm = Depends()):
+    async with user_pool.connection() as conn:
+        result=await conn.execute(
+            "SELECT hashed_password FROM users WHERE username=%s",
+            [form.username],
+        )
+        row= await result.fetchone()
+
+    if not row:
+        raise HTTPException(401,"Incorrect username or password")
+    try:
+        ph.verify(row["hashed_password"],form.password)
+        print(f"[LOGIN] 密码验证通过: {form.username}")
+    except Exception as e:
+        print(f"[LOGIN] 密码验证失败: {form.username} / {type(e).__name__}: {e}")
+        raise HTTPException(401,"Incorrect username or password")
+
+    return {
+        "access_token":create_access_token(form.username),
+        "token_type":"bearer",
+        "user_id":form.username
+    }
+
+
 
 class ChatRequest(BaseModel):
     question:str
@@ -119,8 +191,8 @@ class ChatResponse(BaseModel):
 
 
 @app.post("/agent",response_model=ChatResponse)
-async def agent_chat(req:ChatRequest):
-    config={"configurable":{"thread_id":f"agent_{req.user_id}"}}
+async def agent_chat(req:ChatRequest,current_user:str=Depends(get_current_user)):
+    config={"configurable":{"thread_id":f"agent_{current_user}"}}
     result=await supervisor_agent.ainvoke(
         {
             "messages":[HumanMessage(content=req.question)],
@@ -141,12 +213,11 @@ async def agent_chat(req:ChatRequest):
 
 
 class ApprovalRequest(BaseModel):
-    user_id:str
-    decision:str
+    decision:str=""
 
 @app.post("/agent/approval",response_model=ChatResponse)
-async def agent_approval(req:ApprovalRequest):
-    config={"configurable":{"thread_id":f"agent_{req.user_id}"}}
+async def agent_approval(req:ApprovalRequest,current_user:str=Depends(get_current_user)):
+    config={"configurable":{"thread_id":f"agent_{current_user}"}}
     result=await supervisor_agent.ainvoke(
         Command(resume=req.decision),
         config
@@ -215,8 +286,8 @@ async def refund_approval(req:RefundApprovalRequest):
     return RefundResponse(answer=result["final_result"])
 
 @app.post("/agent/stream")
-async def agent_stream(req:ChatRequest):
-    thread_id=f"agent_{req.user_id}"
+async def agent_stream(req:ChatRequest,current_user:str=Depends(get_current_user)):
+    thread_id=f"agent_{current_user}"
 
     async def event_generator():
         config={"configurable":{"thread_id":thread_id}}
@@ -230,12 +301,15 @@ async def agent_stream(req:ChatRequest):
                 config,
                 stream_mode=["messages","updates"],
             ):
+                got_token=False
                 if mode =="messages":
                     msg_chunk,metadata=data
-
-                    
+                    node=metadata.get("langgraph_node","")
+                    if node=="supervisor":
+                        continue
                     text=getattr(msg_chunk,"content","")
                     if text:
+                        got_token=True
                         yield sse_pack("token",{"text":text})
 
                 elif mode=="updates":
@@ -248,9 +322,9 @@ async def agent_stream(req:ChatRequest):
             state=await supervisor_agent.aget_state(config)
             if not state.tasks or not state.tasks[0].interrupts:
                 answer=state.values.get("worker_result","")
-                if not answer and state.values.get("messages"):
+                if not got_token and not answer and state.values.get("messages"):
                     answer=state.values["messages"][-1].content
-                yield sse_pack("done",{"answer":answer})
+                    yield sse_pack("done",{"answer":answer})
 
         except Exception as e:
             traceback.print_exc()
