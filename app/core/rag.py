@@ -62,13 +62,15 @@ def retrieve(query:str,recall_k:int=10)->list[dict]:
 from sentence_transformers import CrossEncoder
 
 
-reranker=CrossEncoder("BAAI/bge-reranker-base")
+@lru_cache
+def get_reranker()->CrossEncoder:
+    return CrossEncoder("BAAI/bge-reranker-base")
 
 def rerank(query:str,candidates:list[dict],top_k:int)->list[dict]:
     if not candidates:
         return []
     pairs=[(query,c["text"])for c in candidates]
-    scores=reranker.predict(pairs)
+    scores=get_reranker().predict(pairs)
     ranked=sorted(zip(candidates,scores),key=lambda x:x[1],reverse=True)
     return [c for c,_ in ranked[:top_k]]
 
