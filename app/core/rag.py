@@ -4,6 +4,19 @@ os.environ["HF_ENDPOINT"]="https://hf-mirror.com"
 os.environ["HF_HUB_OFFLINE"]="1"
 os.environ["TRANSFORMERS_OFFLINE"]="1"
 
+from functools import lru_cache
+from sentence_transformers import SentenceTransformer
+import chromadb
+from sentence_transformers import SentenceTransformer
+
+client=chromadb.PersistentClient(path=CHROMA_DIR)
+collection=client.get_or_create_collection("knowledge")
+
+
+@lru_cache
+def get_embedder()->SentenceTransformer:
+    return SentenceTransformer("paraphrase-multilingual-MiniLM-L12-v2")
+
 def load_knowledge()->list[dict]:
     chunks=[]
     base=os.path.join(KNOWLEDGE_DIR)
@@ -18,12 +31,7 @@ def load_knowledge()->list[dict]:
 
     return chunks
 
-import chromadb
-from sentence_transformers import SentenceTransformer
 
-model=SentenceTransformer("paraphrase-multilingual-MiniLM-L12-v2")
-client=chromadb.PersistentClient(path=CHROMA_DIR)
-collection=client.get_or_create_collection("knowledge")
 
 def index_knowledge():
     if collection.count()>0:
@@ -31,7 +39,7 @@ def index_knowledge():
 
     chunks=load_knowledge()
     texts=[c["text"]for c in chunks]
-    embeddings=model.encode(texts).tolist()
+    embeddings=get_embedder.encode(texts).tolist()
     collection.add(
         documents=texts,
         embeddings=embeddings,
@@ -40,7 +48,7 @@ def index_knowledge():
     )
 
 def retrieve(query:str,recall_k:int=10)->list[dict]:
-    q_vec=model.encode(query).tolist()
+    q_vec=get_embedder.encode(query).tolist()
     results=collection.query(
         query_embeddings=[q_vec],
         n_results=recall_k,

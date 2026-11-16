@@ -1,9 +1,13 @@
-from app.config import LLM_API_KEY,LLM_URL,MODEL_NAME
+from functools import lru_cache
+
 from langchain_openai import ChatOpenAI
 
-llm=ChatOpenAI(
-    model=MODEL_NAME,
-    api_key=LLM_API_KEY,
-    base_url=LLM_URL
-)
 
+@lru_cache
+def get_llm()->ChatOpenAI:
+    return ChatOpenAI(
+        model="deepseek-v4-flash",
+        temperature=0.5,
+        api_key=os.getenv("OPENAI_API_KEY"),
+        base_url=os.getenv("OPEMAI_BASE_URL")
+    )

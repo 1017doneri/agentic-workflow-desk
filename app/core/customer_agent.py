@@ -6,7 +6,7 @@ from operator import add
 from langgraph.graph import StateGraph,START,END
 from langchain_core.messages import ToolMessage
 
-from app.llm import llm
+from app.llm import get_llm
 from app.config import MAX_STEPS
 
 class AgentState(TypedDict):
@@ -24,7 +24,7 @@ def setup_tools(tools):
     global MCP_TOOLS,MCP_TOOL_MAP,llm_with_tools
     MCP_TOOLS.append(tools)
     MCP_TOOL_MAP={tool.name: tool for tool in tools}
-    llm_with_tools=llm.bind_tools(tools)
+    llm_with_tools=get_llm().bind_tools(tools)
 
 async def call_llm(state:AgentState):
     print(f"[call_llm] 当前消息数：{len(state['messages'])}")

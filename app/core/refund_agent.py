@@ -8,7 +8,7 @@ from langchain_core.runnables import RunnableConfig
 from langgraph.graph import StateGraph, START, END
 from langgraph.types import interrupt
 
-from app.llm import llm
+from app.llm import get_llm
 from app.config import APPROVAL_THRESHOLD
 from app.core.rag import search_knowledge
 from app.safety.input_guard import is_safe_input
@@ -54,7 +54,7 @@ async def planner_node(state: RefundState):
 
 只输出 json，不要解释。"""
 
-    resp = await llm.ainvoke([HumanMessage(content=prompt)])
+    resp = await get_llm().ainvoke([HumanMessage(content=prompt)])
     try:
         data = json.loads(resp.content)
     except json.JSONDecodeError:
@@ -81,7 +81,7 @@ async def policy_agent(state: RefundState):
 
 只输出 json 数组。"""
 
-    resp = await llm.ainvoke([HumanMessage(content=rewrite_prompt)])
+    resp = await get_llm.ainvoke([HumanMessage(content=rewrite_prompt)])
     try:
         queries = json.loads(resp.content)
         if isinstance(queries, dict):
@@ -121,7 +121,7 @@ async def policy_agent(state: RefundState):
 
 只输出 json。"""
 
-    resp = await llm.ainvoke([HumanMessage(content=reflect_prompt)])
+    resp = await get_llm().ainvoke([HumanMessage(content=reflect_prompt)])
     try:
         reflection = json.loads(resp.content)
     except json.JSONDecodeError:
@@ -151,7 +151,7 @@ async def policy_agent(state: RefundState):
 
 只输出 json。"""
 
-    resp = await llm.ainvoke([HumanMessage(content=judge_prompt)])
+    resp = await get_llm().ainvoke([HumanMessage(content=judge_prompt)])
     try:
         data = json.loads(resp.content)
     except json.JSONDecodeError:

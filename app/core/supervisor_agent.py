@@ -11,7 +11,7 @@ class SupervisorState(TypedDict):
 
 import json
 from langchain_core.messages import HumanMessage
-from app.llm import llm
+from app.llm import get_llm
 async def supervisor_node(state: SupervisorState):
     user_msg=state['messages'][-1]
     if  isinstance(user_msg,AIMessage):
@@ -25,7 +25,7 @@ async def supervisor_node(state: SupervisorState):
 用户输入：{user_msg}
 请只输出一个词（customer/refund/FINISH）
 """
-    result=await llm.ainvoke([HumanMessage(content=prompt)])
+    result=await get_llm().ainvoke([HumanMessage(content=prompt)])
     next_worker=result.content.strip().lower()
 
     if next_worker not in ["customer","refund","FINISH"]:

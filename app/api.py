@@ -291,6 +291,7 @@ async def agent_stream(req:ChatRequest,current_user:str=Depends(get_current_user
 
     async def event_generator():
         config={"configurable":{"thread_id":thread_id}}
+        got_token = False
         try:
             input_state={
                 "messages":[HumanMessage(content=req.question)],
@@ -301,7 +302,6 @@ async def agent_stream(req:ChatRequest,current_user:str=Depends(get_current_user
                 config,
                 stream_mode=["messages","updates"],
             ):
-                got_token=False
                 if mode =="messages":
                     msg_chunk,metadata=data
                     node=metadata.get("langgraph_node","")
@@ -321,10 +321,12 @@ async def agent_stream(req:ChatRequest,current_user:str=Depends(get_current_user
                         })
             state=await supervisor_agent.aget_state(config)
             if not state.tasks or not state.tasks[0].interrupts:
-                answer=state.values.get("worker_result","")
-                if not got_token and not answer and state.values.get("messages"):
-                    answer=state.values["messages"][-1].content
-                    yield sse_pack("done",{"answer":answer})
+                answer=""
+                if not got_token:
+                    answer = state.values.get("worker_result", "")
+                    if not answer and state.values.get("messages"):
+                      answer=state.values["messages"][-1].content
+                yield sse_pack("done",{"answer":answer})
 
         except Exception as e:
             traceback.print_exc()

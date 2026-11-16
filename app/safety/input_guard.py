@@ -1,6 +1,6 @@
 import json
 from langchain_core.messages import HumanMessage
-from app.llm import llm
+from app.llm import get_llm
 
 
 async def is_safe_input(user_input: str) -> tuple[bool, str]:
@@ -19,7 +19,7 @@ async def is_safe_input(user_input: str) -> tuple[bool, str]:
 
 只输出 json。"""
 
-    resp = await llm.ainvoke([HumanMessage(content=prompt)])
+    resp = await get_llm().ainvoke([HumanMessage(content=prompt)])
     try:
         data = json.loads(resp.content)
         return data.get("safe", True), data.get("reason", "")
