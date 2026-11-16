@@ -1,7 +1,7 @@
 from functools import lru_cache
 
 from langchain_openai import ChatOpenAI
-
+import os
 
 @lru_cache
 def get_llm()->ChatOpenAI:

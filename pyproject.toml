@@ -29,6 +29,6 @@ dev = [
     "pytest-asyncio>=1.4.1",
 ]
 [tool.pytest.ini_options]
-asyncio_mode="auto"
-testpaths=["test"]
-markers=["slow:需要真实llm"]
+asyncio_mode= "auto"
+testpaths= ["test"]
+markers= ["slow:需要真实llm"]
