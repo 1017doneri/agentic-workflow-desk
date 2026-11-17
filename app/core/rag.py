@@ -39,7 +39,7 @@ def index_knowledge():
 
     chunks=load_knowledge()
     texts=[c["text"]for c in chunks]
-    embeddings=get_embedder.encode(texts).tolist()
+    embeddings=get_embedder().encode(texts).tolist()
     collection.add(
         documents=texts,
         embeddings=embeddings,
@@ -48,7 +48,7 @@ def index_knowledge():
     )
 
 def retrieve(query:str,recall_k:int=10)->list[dict]:
-    q_vec=get_embedder.encode(query).tolist()
+    q_vec=get_embedder().encode(query).tolist()
     results=collection.query(
         query_embeddings=[q_vec],
         n_results=recall_k,

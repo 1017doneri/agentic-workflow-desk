@@ -9,5 +9,5 @@ def get_llm()->ChatOpenAI:
         model="deepseek-v4-flash",
         temperature=0.5,
         api_key=os.getenv("OPENAI_API_KEY"),
-        base_url=os.getenv("OPEMAI_BASE_URL")
+        base_url=os.getenv("OPENAI_URL")
     )

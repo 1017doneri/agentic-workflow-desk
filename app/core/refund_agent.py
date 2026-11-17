@@ -3,17 +3,19 @@ import re
 from typing import TypedDict, Annotated
 from operator import add
 
-from langchain_core.messages import HumanMessage, AIMessage
+from langchain_core.messages import HumanMessage, AIMessage,SystemMessage
 from langchain_core.runnables import RunnableConfig
 from langgraph.graph import StateGraph, START, END
 from langgraph.types import interrupt
-
+from pydantic import BaseModel,Field
 from app.llm import get_llm
 from app.config import APPROVAL_THRESHOLD
 from app.core.rag import search_knowledge
 from app.safety.input_guard import is_safe_input
 from app.safety.output_guard import desensitize
 from app.safety.audit import audit_log
+from langchain_core.output_parsers import PydanticOutputParser
+from app.core.parsing import clean_json
 
 
 class RefundState(TypedDict):
@@ -43,132 +45,155 @@ async def input_guard_node(state: RefundState):
     return {}
 
 
+class RefundPlan(BaseModel):
+    type:str=Field(description="退款类型：生鲜/电子/服饰/其他")
+    amount:float=Field(description="退款金额,单位元")
+    reason:str=Field(default="",description="用户给出的退款原因")
+
+plan_parser=PydanticOutputParser(pydantic_object=RefundPlan)
+
+PLANNER_SYSTEM_PROMPT = f"""你是退款意图解析器。从用户消息中提取：
+- type：退款类型，只能是 生鲜/电子/服饰/其他 之一
+- amount：退款金额，纯数字，单位元
+- reason：退款原因简述（可选）
+
+请严格按以下 json 格式输出，不要任何额外文本、不要 markdown 代码块：
+{plan_parser.get_format_instructions()}
+"""
+
 async def planner_node(state: RefundState):
-    """分析用户请求，判断退款类型和金额"""
     user_msg = state["messages"][-1].content
+    llm = get_llm()
 
-    prompt = f"""分析用户的退款请求，输出 json：
-{{"refund_type": "未发货/已发货/生鲜/其他", "amount": 金额数字}}
+    resp = await llm.ainvoke([
+        SystemMessage(content=PLANNER_SYSTEM_PROMPT),
+        HumanMessage(content=user_msg),
+    ])
 
-用户：{user_msg}
-
-只输出 json，不要解释。"""
-
-    resp = await get_llm().ainvoke([HumanMessage(content=prompt)])
     try:
-        data = json.loads(resp.content)
-    except json.JSONDecodeError:
-        data = {"refund_type": "其他", "amount": 0}
+        plan: RefundPlan = plan_parser.parse(clean_json(resp.content))
+    except Exception as e:
+        print(f"[Planner] 解析失败，原始返回：{resp.content!r}, 错误：{e}")
+        raise
 
-    print(f"[Planner] 类型={data.get('refund_type')}, 金额={data.get('amount')}")
+    print(f"[Planner] 类型={plan.type}, 金额={plan.amount}")
 
     return {
-        "refund_type": data.get("refund_type", "其他"),
-        "amount": float(data.get("amount", 0)),
+        "refund_type": plan.type,
+        "amount": plan.amount,
+        "refund_reason": plan.reason,
     }
+
+
+class QueryRewrite(BaseModel):
+    queries:list[str]=Field(description="2-3个改写后的检索查询，每个查询是一个完整短语，不要重复")
+
+class PolicyDecision(BaseModel):
+    sufficient:bool=Field(description="检索到的政策是否足以判断")
+    needs_approval:bool=Field(description="是否需要人工审批,判断模糊时设为true")
+    reason:str=Field(default="",description="简要说明判断理由")
+
+
+rewrite_parser = PydanticOutputParser(pydantic_object=QueryRewrite)
+decision_parser = PydanticOutputParser(pydantic_object=PolicyDecision)
+
+REWRITE_SYSTEM_PROMPT = f"""你是检索查询改写器。根据用户的退款请求，生成 2-3 个用于检索退款政策知识库的查询。
+每个查询是一个简短完整的中文短语，不要重复，不要包含订单号。
+
+请严格按以下 json 格式输出，不要任何额外文本、不要 markdown 代码块：
+{rewrite_parser.get_format_instructions()}
+"""
+
+DECISION_SYSTEM_PROMPT = f"""你是退款政策审核员。根据检索到的政策文本，判断这笔退款是否符合政策、是否需要人工审批。
+判断规则：
+- 金额超过 {APPROVAL_THRESHOLD} 元：needs_approval=true
+- 生鲜类不支持无理由退款：needs_approval=true
+- 政策文本无法明确覆盖用户情况：sufficient=false, needs_approval=true
+- 其余情况按政策文本直接判断
+
+请严格按以下 json 格式输出，不要任何额外文本、不要 markdown 代码块：
+{decision_parser.get_format_instructions()}
+"""
+
 
 async def policy_agent(state: RefundState):
     """查询改写 + 多查询检索 + 自我反思 + 二次检索"""
-
-    original_query = f"{state['refund_type']}退款政策"
-
-    rewrite_prompt = f"""把用户的退款问题改写成 2 个适合检索的查询，用 json 数组输出。
-
-用户问题：{state['messages'][-1].content}
-退款类型：{state['refund_type']}
-
-输出示例：["未发货退款流程", "未发货退款到账时间"]
-
-只输出 json 数组。"""
-
-    resp = await get_llm.ainvoke([HumanMessage(content=rewrite_prompt)])
+    user_msg=state["messages"][-1].content
+    refund_type=state.get("refund_type","其他")
+    amount=state.get("amount",0.0)
+    llm=get_llm()
+    resp = await llm.ainvoke([
+        SystemMessage(content=REWRITE_SYSTEM_PROMPT),
+        HumanMessage(content=f"用户请求：{user_msg}\n退款类型：{refund_type}\n退款金额：{amount}"),
+    ])
     try:
-        queries = json.loads(resp.content)
-        if isinstance(queries, dict):
-            queries = queries.get("queries", [original_query])
-        if not isinstance(queries, list):
-            queries = [original_query]
-    except json.JSONDecodeError:
-        queries = [original_query]
+        rewrite: QueryRewrite = rewrite_parser.parse(clean_json(resp.content))
+    except Exception as e:
+        print(f"[Policy] 改写解析失败，原始返回：{resp.content!r}, 错误：{e}")
+        raise
 
-    queries = [original_query] + queries[:2]
+    queries = rewrite.queries or [f"{refund_type}退款政策"]
     print(f"[Policy] 改写后的查询：{queries}")
 
-    # ---- 第 2 轮：多查询检索 ----
-    all_contexts = []
+    contexts = []
     for q in queries:
-        ctx = search_knowledge(q)
-        if ctx:
-            all_contexts.append(ctx)
+        result = search_knowledge(q)
+        if result:
+            contexts.extend(result if isinstance(result, list) else [result])
+    print(f"[Policy] 检索到 {len(contexts)} 段")
 
-    combined_context = "\n\n".join(all_contexts)
-    print(f"[Policy] 检索到 {len(all_contexts)} 段上下文")
+    context_text = "\n\n".join(contexts) if contexts else "(无检索结果)"
 
-    # ---- 第 3 轮：自我反思 ----
-    reflect_prompt = f"""根据以下检索到的政策，判断是否能回答用户的退款问题。
-
-用户问题：{state['messages'][-1].content}
-退款类型：{state['refund_type']}
-
-检索到的政策：
-{combined_context}
-
-输出 json：
-{{"sufficient": true/false, "reason": "简要说明"}}
-
-如果政策里明确提到了用户的情况，sufficient 为 true。
-如果政策里没有覆盖用户的情况，sufficient 必须为 false。不要轻易说 true。
-
-只输出 json。"""
-
-    resp = await get_llm().ainvoke([HumanMessage(content=reflect_prompt)])
+    resp = await llm.ainvoke([
+        SystemMessage(content=DECISION_SYSTEM_PROMPT),
+        HumanMessage(content=(
+            f"用户请求：{user_msg}\n"
+            f"退款类型：{refund_type}\n"
+            f"金额：{amount}元\n\n"
+            f"检索到的政策：\n{context_text}"
+            ))
+        ])
     try:
-        reflection = json.loads(resp.content)
-    except json.JSONDecodeError:
-        reflection = {"sufficient": True, "reason": "解析失败，默认足够"}
+        reflection=PolicyDecision=decision_parser.parse(clean_json(resp.content))
+    except Exception as e:
+        print(f"[Policy]反思解析失败，原始返回：{resp.content!r},错误：{e}")
+        raise
 
-    print(f"[Policy] 反思：sufficient={reflection.get('sufficient')}, "
-          f"reason={reflection.get('reason')}")
+    print(f"[Policy]反思：sufficient={reflection.sufficient},reason={reflection.reason}")
 
+    if not reflection.sufficient:
+        extra_query=f"{refund_type}退款政策{reflection.reason}" if reflection.reason else f"{refund_type}退款政策，特殊情况"
+    print(f"[Policy]二次检索补充{extra_query}")
+    extra=search_knowledge(extra_query)
+    if extra:
+        contexts.extend(extra if isinstance(extra,list)else [extra])
+        context_text="\n\n".join(contexts)
 
-    if not reflection.get("sufficient", True):
-        fallback_query = f"退款政策 {state['refund_type']}"
-        extra_ctx = search_knowledge(fallback_query)
-        if extra_ctx:
-            combined_context += "\n\n" + extra_ctx
-            print(f"[Policy] 二次检索补充：{fallback_query}")
-
-    judge_prompt = f"""根据以下退款政策，判断用户的退款请求是否符合：
-
-政策：
-{combined_context}
-
-退款类型：{state['refund_type']}
-金额：{state['amount']} 元
-
-输出 json：
-{{"result": "符合/不符合/需要进一步确认", "reason": "简要说明"}}
-
-只输出 json。"""
-
-    resp = await get_llm().ainvoke([HumanMessage(content=judge_prompt)])
+    resp = await llm.ainvoke([
+        SystemMessage(content=DECISION_SYSTEM_PROMPT),
+        HumanMessage(content=(
+            f"用户请求：{user_msg}\n"
+            f"退款类型：{refund_type}\n"
+            f"金额：{amount}元\n\n"
+            f"补充后的政策：\n{context_text}"
+        )),
+    ])
     try:
-        data = json.loads(resp.content)
-    except json.JSONDecodeError:
-        data = {"result": "需要进一步确认", "reason": "政策解析失败"}
+        reflection = decision_parser.parse(clean_json(resp.content))
+    except Exception as e:
+        print(f"[Policy] 二次反思解析失败，原始返回：{resp.content!r}, 错误：{e}")
+        raise
+    print(f"[Policy]二次反思：sufficient={reflection.sufficient}"
+          f"needs_approval={reflection.needs_approval}")
 
-    needs_approval = (
-        state["amount"] > APPROVAL_THRESHOLD
-        or data.get("result") == "需要进一步确认"
-    )
+    needs_approval=reflection.needs_approval or amount>=500
 
-    print(f"[Policy] 结果={data.get('result')}, 需要审批={needs_approval}")
+    print(f"[Policy]结果={reflection.reason}，需要审批={needs_approval}")
 
     return {
-        "policy_result": data.get("reason", ""),
-        "needs_approval": needs_approval,
+        "policy_result":reflection.reason,
+        "needs_approval":needs_approval
     }
-
 
 async def approval_node(state: RefundState, config: RunnableConfig):
     """高风险操作，暂停等待人工确认"""
