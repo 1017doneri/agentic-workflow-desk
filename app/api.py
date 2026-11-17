@@ -99,7 +99,13 @@ async def lifespan(app:FastAPI):
 
 app=FastAPI(lifespan=lifespan)
 
-SECRET_KEY = os.getenv("JWT_SECRET_KEY", "dev-secret-change-in-production")
+SECRET_KEY = os.getenv("JWT_SECRET_KEY", "").strip()
+if len(SECRET_KEY)<16:
+    raise RuntimeError(
+        "JWT_SECRET_KEY未设置或过短，拒绝启动"
+        "生成方法：python -c \"import secrets;print(secrets.token_urlsafe(32))\""
+    )
+
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 60 * 24
 
@@ -187,7 +193,6 @@ async def login(form: OAuth2PasswordRequestForm = Depends()):
 
 class ChatRequest(BaseModel):
     question:str
-    user_id:str="default"
 
 class ChatResponse(BaseModel):
     answer:str
@@ -233,8 +238,8 @@ def sse_pack(event:str,data:dict)->str:
 
 
 @app.post("/chat",response_model=ChatResponse)
-async def chat(req:ChatRequest):
-    config={"configurable":{"thread_id":req.user_id}}
+async def chat(req:ChatRequest,current_user:str=Depends(get_current_user)):
+    config={"configurable":{"thread_id":f"chat_{current_user}"}}
     request_id=str(uuid.uuid4())[:8]
 
     result=await customer_agent.ainvoke(
@@ -251,15 +256,14 @@ async def chat(req:ChatRequest):
 
 class RefundRequest(BaseModel):
     question:str
-    user_id:str="default"
 
 class RefundResponse(BaseModel):
     answer:str
     needs_approval:bool=False
 
 @app.post("/refund",response_model=RefundResponse)
-async def refund(req:RefundRequest):
-    config={"configurable":{"thread_id":f"refund_{req.user_id}"}}
+async def refund(req:RefundRequest,current_user:str=Depends(get_current_user)):
+    config={"configurable":{"thread_id":f"refund_{current_user}"}}
 
     result=await refund_agent.ainvoke(
         init_state(req.question),
@@ -276,12 +280,11 @@ async def refund(req:RefundRequest):
     return RefundResponse(answer=result["final_result"])
 
 class RefundApprovalRequest(BaseModel):
-    user_id:str
     decision:str
 
 @app.post("/refund/approval",response_model=RefundResponse)
-async def refund_approval(req:RefundApprovalRequest):
-    config={"configurable":{"thread_id":f"refund_{req.user_id}"}}
+async def refund_approval(req:RefundApprovalRequest,current_user:str=Depends(get_current_user)):
+    config={"configurable":{"thread_id":f"refund_{current_user}"}}
 
     result=await refund_agent.ainvoke(
         Command(resume=req.decision),
