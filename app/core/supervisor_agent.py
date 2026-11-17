@@ -9,6 +9,18 @@ class SupervisorState(TypedDict):
     next:str
     worker_result:str
 
+    refund_type: str
+    amount: float
+    policy_result: str
+    needs_approval: bool
+    approval: bool
+    final_result: str
+
+    step: int
+    prompt_tokens: int
+    completion_tokens: int
+    request_id: str
+
 import json
 from langchain_core.messages import HumanMessage
 from app.llm import get_llm
@@ -37,30 +49,6 @@ async def supervisor_node(state: SupervisorState):
 from app.core.customer_agent import build_customer_graph
 from app.core.refund_agent import build_refund_graph
 
-customer_agent=build_customer_graph()
-refund_agent=build_refund_graph()
-
-async def call_customer_agent(state: SupervisorState):
-    print("[Worker]客服专员接手。。。")
-    result=await customer_agent.ainvoke({"messages":state["messages"]})
-
-    return {
-        "messages":[result["messages"][-1]],
-        "worker_result":result["messages"][-1].content,
-    }
-
-async def call_refund_agent(state: SupervisorState):
-    print("[Refund]专员接手中。。。")
-
-    user_msg=state['messages'][-1].content
-    refund_input=init_refund_state(user_msg)
-    result=await refund_agent.ainvoke(refund_input)
-
-    final_result=result.get("final_result","退款处理中。。。")
-    return {
-        "messages":[AIMessage(final_result)],
-        "worker_result":final_result
-    }
 
 from langgraph.graph import StateGraph,START,END
 
@@ -76,8 +64,8 @@ def route_supervisor(state:SupervisorState)->Literal["customer","refund","__end_
 
 def build_supervisor_graph(checkpointer=None):
     builder = StateGraph(SupervisorState)
-    builder.add_node("customer",call_customer_agent)
-    builder.add_node("refund",call_refund_agent)
+    builder.add_node("customer",build_customer_graph())
+    builder.add_node("refund",build_refund_graph())
     builder.add_node("supervisor",supervisor_node)
     builder.add_edge(START,"supervisor")
     builder.add_conditional_edges("supervisor",route_supervisor,{
