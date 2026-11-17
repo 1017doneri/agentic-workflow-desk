@@ -29,10 +29,13 @@ services:
       - .env
     environment:
       DATABASE_URL: postgresql://${DB_USER:-postgres}:${DB_PASSWORD:-postgres}@postgres:5432/${DB_NAME:-langgraph}
-      HF_HUB_OFFLINE: "1"
       JWT_SECRET_KEY: ${JWT_SECRET_KEY}
+      HF_HOME: /opt/hf
+      HF_HUB_OFFLINE: "1"
+      TRANSFORMERS_OFFLINE: "1"
+      HF_HUB_DISABLE_XET: "1"
     volumes:
-      - C:/Users/zzy/.cache/huggingface:/root/.cache/huggingface:ro
+      - hf_cache:/root/.cache/huggingface
     ports:
       - "8000:8000"
     depends_on:
@@ -55,3 +58,4 @@ services:
 
 volumes:
   postgres_data:
+  hf_cache:

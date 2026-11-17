@@ -28,6 +28,7 @@ build_refund_graph,
 init_state
 )
 from langgraph.types import Command
+from app.core.rag import get_embedder,get_reranker
 
 
 from app.core.customer_agent import(
@@ -54,6 +55,8 @@ async def lifespan(app:FastAPI):
     global customer_agent,refund_agent,supervisor_agent
     env=os.environ.copy()
     env["PYTHONIOENCODING"]="utf-8"
+    await asyncio.to_thread(get_embedder)
+    await asyncio.to_thread(get_reranker)
     server_params=StdioServerParameters(
         command=sys.executable,
         args=["-m","app.mcp.server"],
@@ -61,6 +64,7 @@ async def lifespan(app:FastAPI):
     )
 
     async with stdio_client(server_params) as (read,write):
+
         async with ClientSession(read,write) as session:
             await session.initialize()
 
@@ -188,6 +192,7 @@ class ChatRequest(BaseModel):
 
 class ChatResponse(BaseModel):
     answer:str
+    needs_approval:bool=False
 
 
 @app.post("/agent",response_model=ChatResponse)

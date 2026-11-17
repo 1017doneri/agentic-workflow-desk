@@ -5,7 +5,24 @@ WORKDIR /app
 COPY pyproject.toml uv.lock ./
 RUN pip install uv && uv sync --frozen --no-dev
 
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONIOENCODING=utf-8 \
+    HF_ENDPOINT=https://hf-mirror.com \
+    HF_HOME=/opt/hf \
+    HF_HUB_DISABLE_XET=1 \
+    EMBED_MODEL=paraphrase-multilingual-MiniLM-L12-v2 \
+    RERANK_MODEL=BAAI/bge-reranker-base
+
+RUN /app/.venv/bin/python -c "import os; \
+from sentence_transformers import SentenceTransformer; \
+SentenceTransformer(os.environ['EMBED_MODEL'])"
+
+RUN /app/.venv/bin/python -c "import os; \
+from sentence_transformers import CrossEncoder; \
+CrossEncoder(os.environ['RERANK_MODEL'])"
+
+
 COPY . .
 
-CMD ["uv","run","uvicorn","app.api:app","--host","0.0.0.0","--port","8000"]
+CMD ["uv","run","--no-sync","uvicorn","app.api:app","--host","0.0.0.0","--port","8000"]
 

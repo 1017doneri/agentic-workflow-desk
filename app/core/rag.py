@@ -1,8 +1,5 @@
 import os
 from ..config import KNOWLEDGE_DIR,CHROMA_DIR
-os.environ["HF_ENDPOINT"]="https://hf-mirror.com"
-os.environ["HF_HUB_OFFLINE"]="1"
-os.environ["TRANSFORMERS_OFFLINE"]="1"
 
 from functools import lru_cache
 from sentence_transformers import SentenceTransformer

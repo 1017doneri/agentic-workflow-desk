@@ -154,7 +154,7 @@ async def policy_agent(state: RefundState):
             ))
         ])
     try:
-        reflection=PolicyDecision=decision_parser.parse(clean_json(resp.content))
+        reflection:PolicyDecision=decision_parser.parse(clean_json(resp.content))
     except Exception as e:
         print(f"[Policy]反思解析失败，原始返回：{resp.content!r},错误：{e}")
         raise
@@ -163,30 +163,30 @@ async def policy_agent(state: RefundState):
 
     if not reflection.sufficient:
         extra_query=f"{refund_type}退款政策{reflection.reason}" if reflection.reason else f"{refund_type}退款政策，特殊情况"
-    print(f"[Policy]二次检索补充{extra_query}")
-    extra=search_knowledge(extra_query)
-    if extra:
-        contexts.extend(extra if isinstance(extra,list)else [extra])
-        context_text="\n\n".join(contexts)
+        print(f"[Policy]二次检索补充{extra_query}")
+        extra=search_knowledge(extra_query)
+        if extra:
+            contexts.extend(extra if isinstance(extra,list)else [extra])
+            context_text="\n\n".join(contexts)
 
-    resp = await llm.ainvoke([
-        SystemMessage(content=DECISION_SYSTEM_PROMPT),
-        HumanMessage(content=(
-            f"用户请求：{user_msg}\n"
-            f"退款类型：{refund_type}\n"
-            f"金额：{amount}元\n\n"
-            f"补充后的政策：\n{context_text}"
-        )),
-    ])
-    try:
-        reflection = decision_parser.parse(clean_json(resp.content))
-    except Exception as e:
-        print(f"[Policy] 二次反思解析失败，原始返回：{resp.content!r}, 错误：{e}")
-        raise
-    print(f"[Policy]二次反思：sufficient={reflection.sufficient}"
-          f"needs_approval={reflection.needs_approval}")
+        resp = await llm.ainvoke([
+            SystemMessage(content=DECISION_SYSTEM_PROMPT),
+            HumanMessage(content=(
+                f"用户请求：{user_msg}\n"
+                f"退款类型：{refund_type}\n"
+                f"金额：{amount}元\n\n"
+                f"补充后的政策：\n{context_text}"
+            )),
+        ])
+        try:
+            reflection = decision_parser.parse(clean_json(resp.content))
+        except Exception as e:
+            print(f"[Policy] 二次反思解析失败，原始返回：{resp.content!r}, 错误：{e}")
+            raise
+        print(f"[Policy]二次反思：sufficient={reflection.sufficient}"
+              f"needs_approval={reflection.needs_approval}")
 
-    needs_approval=reflection.needs_approval or amount>=500
+    needs_approval=reflection.needs_approval or amount>=APPROVAL_THRESHOLD
 
     print(f"[Policy]结果={reflection.reason}，需要审批={needs_approval}")
 
