@@ -1,5 +1,5 @@
 from mcp.server.fastmcp import FastMCP
-from app.core.rag import search_knowledge
+from app.core.rag import asearch_knowledge
 
 mcp=FastMCP("CustomerService")
 
@@ -7,7 +7,7 @@ mcp=FastMCP("CustomerService")
 @mcp.tool()
 def kb_search(query:str)->str:
     """在客服知识库中检索答案。当用户询问退款，配送，保修等政策问题时使用。"""
-    results=search_knowledge(query)
+    results= await asearch_knowledge(query)
     return results
 
 @mcp.tool()

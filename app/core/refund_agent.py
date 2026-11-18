@@ -10,13 +10,13 @@ from langgraph.types import interrupt
 from pydantic import BaseModel,Field
 from app.llm import get_llm
 from app.config import APPROVAL_THRESHOLD
-from app.core.rag import search_knowledge
 from app.safety.input_guard import is_safe_input
 from app.safety.output_guard import desensitize
 from app.safety.audit import audit_log
 from langchain_core.output_parsers import PydanticOutputParser
 from app.core.parsing import clean_json
 from app.orders import fetch_order,record_refund
+from app.core.rag import asearch_knowledge
 
 class RefundState(TypedDict):
     messages: Annotated[list, add]
@@ -171,7 +171,7 @@ async def policy_agent(state: RefundState):
 
     contexts = []
     for q in queries:
-        result = search_knowledge(q)
+        result =await asearch_knowledge(q)
         if result:
             contexts.extend(result if isinstance(result, list) else [result])
     print(f"[Policy] 检索到 {len(contexts)} 段")
@@ -198,7 +198,7 @@ async def policy_agent(state: RefundState):
     if not reflection.sufficient:
         extra_query=f"{refund_type}退款政策{reflection.reason}" if reflection.reason else f"{refund_type}退款政策，特殊情况"
         print(f"[Policy]二次检索补充{extra_query}")
-        extra=search_knowledge(extra_query)
+        extra=await asearch_knowledge(extra_query)
         if extra:
             contexts.extend(extra if isinstance(extra,list)else [extra])
             context_text="\n\n".join(contexts)

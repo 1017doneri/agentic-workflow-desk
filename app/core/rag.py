@@ -5,6 +5,7 @@ from functools import lru_cache
 from sentence_transformers import SentenceTransformer
 import chromadb
 from sentence_transformers import SentenceTransformer
+import asyncio
 
 client=chromadb.PersistentClient(path=CHROMA_DIR)
 collection=client.get_or_create_collection("knowledge")
@@ -77,3 +78,6 @@ def search_knowledge(query:str,recall_k:int=10,top_k:int=3)->str:
     return "\n".join(f"[{c['source']}]{c['text']}"for c in reranked[:top_k])
 
 index_knowledge()
+
+async def asearch_knowledge(query:str,recall_k:int,top_k:int)->str:
+    return asyncio.to_thread(search_knowledge,query,recall_k,top_k)
