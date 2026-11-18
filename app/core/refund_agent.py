@@ -16,16 +16,31 @@ from app.safety.output_guard import desensitize
 from app.safety.audit import audit_log
 from langchain_core.output_parsers import PydanticOutputParser
 from app.core.parsing import clean_json
-
+from app.orders import fetch_order,record_refund
 
 class RefundState(TypedDict):
     messages: Annotated[list, add]
+    order_id:str
     refund_type: str
     amount: float
     policy_result: str
     needs_approval: bool
     approval: bool
     final_result: str
+    refund_reason:str
+
+def init_state(question:str)->RefundState:
+    return {
+        "messages":[HumanMessage(content=question)],
+        "order_id":"",
+        "refund_type":"",
+        "amount":0,
+        "policy_result":"",
+        "needs_approval":False,
+        "approval":False,
+        "final_result":"",
+        "refund_reason":"",
+    }
 
 
 async def input_guard_node(state: RefundState):
@@ -46,15 +61,13 @@ async def input_guard_node(state: RefundState):
 
 
 class RefundPlan(BaseModel):
-    type:str=Field(description="退款类型：生鲜/电子/服饰/其他")
-    amount:float=Field(description="退款金额,单位元")
+    order_id:str=Field(description="订单号，用户没提就留空")
     reason:str=Field(default="",description="用户给出的退款原因")
 
 plan_parser=PydanticOutputParser(pydantic_object=RefundPlan)
 
 PLANNER_SYSTEM_PROMPT = f"""你是退款意图解析器。从用户消息中提取：
-- type：退款类型，只能是 生鲜/电子/服饰/其他 之一
-- amount：退款金额，纯数字，单位元
+- order_id:用户想要退款的订单号，如果用户没有给出订单号，留空字符串
 - reason：退款原因简述（可选）
 
 请严格按以下 json 格式输出，不要任何额外文本、不要 markdown 代码块：
@@ -76,13 +89,34 @@ async def planner_node(state: RefundState):
         print(f"[Planner] 解析失败，原始返回：{resp.content!r}, 错误：{e}")
         raise
 
-    print(f"[Planner] 类型={plan.type}, 金额={plan.amount}")
-
     return {
-        "refund_type": plan.type,
-        "amount": plan.amount,
+        "order_id":plan.order_id,
         "refund_reason": plan.reason,
     }
+
+
+async def load_order_node(state:RefundState):
+    order_id=state.get("order_id","").strip()
+    if not order_id:
+        msg="未提供订单号，无法核对退款金额，请转人工处理"
+        return {"final_result":msg,"messages":[AIMessage(content=msg)]}
+
+    order=await fetch_order(order_id)
+    if order is None:
+        msg = f"未查询到订单 {order_id}，已转人工核实。"
+        return {"final_result": msg, "messages": [AIMessage(content=msg)]}
+
+    print(f"[Order] {order_id} → {order['category']} / {order['amount']} 元 / {order['status']}")
+    return {
+        "refund_type": order["category"],
+        "amount": float(order["amount"]),
+    }
+
+
+def route_after_load_order(state: RefundState):
+    if state.get("final_result"):
+        return "output_guard"
+    return "policy"
 
 
 class QueryRewrite(BaseModel):
@@ -220,14 +254,21 @@ async def approval_node(state: RefundState, config: RunnableConfig):
     return {"approval": approved}
 
 
-async def executor_node(state: RefundState):
+async def executor_node(state: RefundState,config:RunnableConfig):
     """执行退款操作"""
     if state.get("needs_approval") and not state.get("approval"):
         result = "退款申请未通过审批，已拒绝。"
-    elif state["policy_result"] and "不符合" in state["policy_result"]:
+    elif state["policy_result"] and "不符合" in state.get("policy_result",""):
         result = f"退款申请不符合政策：{state['policy_result']}"
     else:
-        result = f"退款 {state['amount']} 元已处理，预计 24 小时内到账。"
+        thread_id =config["configurable"]["thread_id"]
+        first_time=await record_refund(
+            state["order_id"],thread_id,state["amount"],"approved"
+        )
+        if not first_time:
+            result=f"订单{state['order_id']}已经退款过，请勿重复退款"
+        else:
+            result=f"退款{state['amount']}元已经处理，预计24小时内到账"
 
     print(f"[Executor] {result}")
 
@@ -264,6 +305,7 @@ def build_refund_graph(checkpointer=None):
     graph.add_node("planner", planner_node)
     graph.add_node("policy", policy_agent)
     graph.add_node("approval", approval_node)
+    graph.add_node("load_order",load_order_node)
     graph.add_node("executor", executor_node)
     graph.add_node("output_guard", output_guard_node)
 
@@ -272,10 +314,14 @@ def build_refund_graph(checkpointer=None):
         "planner": "planner",
         "end": END,
     })
-    graph.add_edge("planner", "policy")
-    graph.add_conditional_edges("policy", route_after_policy, {
-        "approval": "approval",
-        "executor": "executor",
+    graph.add_edge("planner", "load_order")
+    graph.add_conditional_edges("load_order", route_after_load_order, {
+        "policy":"policy",
+        "output_guard":"output_guard",
+    })
+    graph.add_conditional_edges("policy", route_after_policy,{
+        "approval":"approval",
+        "executor":"executor"
     })
     graph.add_edge("approval", "executor")
     graph.add_edge("executor", "output_guard")

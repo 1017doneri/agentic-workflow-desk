@@ -79,6 +79,10 @@ async def lifespan(app:FastAPI):
                 await checkpointer.setup()
                 await init_user_db(pool)
 
+                from app import orders
+                orders.set_pool(pool)
+                await orders.init_orders()
+
                 graph=StateGraph(AgentState)
                 graph.add_node("call_llm",call_llm)
                 graph.add_node("run_tools", run_tools)
