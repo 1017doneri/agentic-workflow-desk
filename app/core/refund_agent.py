@@ -8,7 +8,7 @@ from langchain_core.runnables import RunnableConfig
 from langgraph.graph import StateGraph, START, END
 from langgraph.types import interrupt
 from pydantic import BaseModel,Field
-from app.llm import get_llm
+from app.llm import get_llm,LLMUnavailable,degrade_on_llm_failure
 from app.config import APPROVAL_THRESHOLD
 from app.safety.input_guard import is_safe_input
 from app.safety.output_guard import desensitize
@@ -80,10 +80,15 @@ async def planner_node(state: RefundState):
     user_msg = state["messages"][-1].content
     llm = get_llm()
 
-    resp = await llm.ainvoke([
+    try:
+        resp = await llm.ainvoke([
         SystemMessage(content=PLANNER_SYSTEM_PROMPT),
         HumanMessage(content=user_msg),
     ])
+    except LLMUnavailable as exc:
+        print(f"[Planner] 模型不可用，转人工：{exc}")
+        msg = "系统繁忙，已转人工核实，请稍后再试。"
+        return {"final_result": msg, "refund_status": "degraded", "messages": [AIMessage(content=msg)]}
 
     try:
         plan: RefundPlan = plan_parser.parse(clean_json(resp.content))
@@ -159,10 +164,15 @@ async def policy_agent(state: RefundState):
     refund_type=state.get("refund_type","其他")
     amount=state.get("amount",0.0)
     llm=get_llm()
-    resp = await llm.ainvoke([
+    try:
+        resp = await llm.ainvoke([
         SystemMessage(content=REWRITE_SYSTEM_PROMPT),
         HumanMessage(content=f"用户请求：{user_msg}\n退款类型：{refund_type}\n退款金额：{amount},订单状态：{state.get('order_status', '未知')}"),
     ])
+    except LLMUnavailable as exc:
+        print(f"[Planner] 模型不可用，转人工：{exc}")
+        msg = "系统繁忙，已转人工核实，请稍后再试。"
+        return {"final_result": msg, "refund_status": "degraded", "messages": [AIMessage(content=msg)]}
     try:
         rewrite: QueryRewrite = rewrite_parser.parse(clean_json(resp.content))
     except Exception as e:
@@ -181,7 +191,8 @@ async def policy_agent(state: RefundState):
 
     context_text = "\n\n".join(contexts) if contexts else "(无检索结果)"
 
-    resp = await llm.ainvoke([
+    try:
+        resp = await llm.ainvoke([
         SystemMessage(content=DECISION_SYSTEM_PROMPT),
         HumanMessage(content=(
             f"用户请求：{user_msg}\n"
@@ -191,6 +202,10 @@ async def policy_agent(state: RefundState):
             f"检索到的政策：\n{context_text}"
             ))
         ])
+    except LLMUnavailable as exc:
+        print(f"[Planner] 模型不可用，转人工：{exc}")
+        msg = "系统繁忙，已转人工核实，请稍后再试。"
+        return {"final_result": msg, "refund_status": "degraded", "messages": [AIMessage(content=msg)]}
     try:
         reflection:PolicyDecision=decision_parser.parse(clean_json(resp.content))
     except Exception as e:
@@ -316,9 +331,12 @@ def route_after_policy(state: RefundState):
 def build_refund_graph(checkpointer=None):
     graph = StateGraph(RefundState)
 
-    graph.add_node("input_guard", input_guard_node)
-    graph.add_node("planner", planner_node)
-    graph.add_node("policy", policy_agent)
+    #graph.add_node("input_guard", input_guard_node)
+    #graph.add_node("planner", planner_node)
+    #graph.add_node("policy", policy_agent)
+    graph.add_node("input_guard", degrade_on_llm_failure(input_guard_node))
+    graph.add_node("planner", degrade_on_llm_failure(planner_node))
+    graph.add_node("policy", degrade_on_llm_failure(policy_agent))
     graph.add_node("approval", approval_node)
     graph.add_node("load_order",load_order_node)
     graph.add_node("executor", executor_node)

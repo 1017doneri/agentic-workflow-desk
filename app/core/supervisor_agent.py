@@ -2,7 +2,7 @@ from typing import TypedDict,Annotated,Literal
 from operator import add
 from langchain_core.messages import AnyMessage, AIMessage
 from app.core.refund_agent import init_state as init_refund_state
-
+from app.llm import degrade_on_llm_failure
 
 class SupervisorState(TypedDict):
     messages:Annotated[list[AnyMessage],add]
@@ -15,6 +15,7 @@ class SupervisorState(TypedDict):
     needs_approval: bool
     approval: bool
     final_result: str
+    refund_status:str
 
     step: int
     prompt_tokens: int
@@ -66,7 +67,8 @@ def build_supervisor_graph(checkpointer=None):
     builder = StateGraph(SupervisorState)
     builder.add_node("customer",build_customer_graph())
     builder.add_node("refund",build_refund_graph())
-    builder.add_node("supervisor",supervisor_node)
+    #builder.add_node("supervisor",supervisor_node)
+    builder.add_node("supervisor", degrade_on_llm_failure(supervisor_node))
     builder.add_edge(START,"supervisor")
     builder.add_conditional_edges("supervisor",route_supervisor,{
         "customer":"customer",
