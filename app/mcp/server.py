@@ -11,6 +11,7 @@ async def kb_search(query:str)->str:
     results= await asearch_knowledge(query)
     return results
 
+
 @mcp.tool()
 def get_order_status(order_id:str)->str:
     fake_orders={

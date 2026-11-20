@@ -2,6 +2,7 @@ import streamlit as st
 import httpx
 import  json
 import os
+import uuid
 
 API_BASE=os.getenv("API_BASE","http://127.0.0.1:8000")
 
@@ -16,7 +17,6 @@ def call_agent(prompt:str,thread_id:str)->str:
         st.error(f"后端返回{resp.status_code}:{resp.text}")
         st.stop()
     data=resp.json()
-    st.caption(f"DEBUG:{data}")
     return data
 
 def stream_agent(prompt:str,thread_id:str)->str:
@@ -24,7 +24,7 @@ def stream_agent(prompt:str,thread_id:str)->str:
     with httpx.stream(
         "POST",
         f"{API_BASE}/agent/stream",
-        json={"question":prompt},
+        json={"question":prompt,"conversation_id":st.session_state.conversation_id},
         headers=headers,
         timeout=None
     )as response:
@@ -35,7 +35,6 @@ def stream_agent(prompt:str,thread_id:str)->str:
         response.raise_for_status()
         current_event=None
         for line in response.iter_lines():
-            print(f"[SSE RAW] {line!r}")
             if line.startswith("event:"):
                 current_event=line.split(":",1)[1].strip()
                 continue
@@ -46,10 +45,19 @@ def stream_agent(prompt:str,thread_id:str)->str:
                 except json.JSONDecodeError as e:
                     print(f"PARSE FAIL:{e}")
                     continue
-                if current_event=="token":
-                    yield payload.get("text","")
+                if current_event == "meta":
+                    cid = payload.get("conversation_id")
+                    if cid:
+                        st.session_state.conversation_id = cid
+                elif current_event=="token":
+                       yield payload.get("text","")
                 elif current_event=="interrupt":
-                    st.session_state.pending_interrupt=payload
+                    st.session_state.pending_interrupt={
+                        **payload,
+                        "conversation_id":payload.get(
+                        "conversation_id",st.session_state.conversation_id
+                    ),
+                    }
                 elif current_event=="done":
                     answer=payload.get("answer","")
                     if answer:
@@ -62,12 +70,21 @@ def stream_agent(prompt:str,thread_id:str)->str:
 
 def resume_agent(user_id:str,decision:str):
     headers = {"Authorization": f"Bearer {st.session_state.token}"}
+    conv=(st.session_state.get("pending_interrupt" or {}).get("conversation_id") or st.session_state.conversation_id)
     resp=httpx.post(
         f"{API_BASE}/agent/approval",
-        json={"decision":decision},
+        json={"decision":decision,"conversation_id":conv},
         headers=headers,
         timeout=120
     )
+    if resp.status_code==409:
+        st.warning("这笔退款已经处理过了（或会话已失效）")
+        st.session_state.pending_interrupt=None
+        for msg in st.session_state.messages:
+            if msg.get("needs_approval"):
+                msg["needs_approval"]=False
+        st.rerun()
+        return
     if resp.status_code!=200:
         st.error(f"审批失败：{resp.text}")
         return
@@ -102,6 +119,8 @@ st.title("Agent Workflow Desk")
 
 if"token" not in st.session_state:
     st.session_state.token=None
+if "conversation_id" not in st.session_state:
+    st.session_state.conversation_id=uuid.uuid4().hex[:12]
 if"user_id" not in st.session_state:
     st.session_state.user_id=None
 
@@ -113,7 +132,6 @@ def login_page():
         submitted=st.form_submit_button("提交")
 
     if submitted:
-        st.write(f"DEBUG: submitted={submitted}, mode={mode!r}, username={username!r}, password_len={len(password)}")
         if not username or not password:
             st.error("用户名和密码不能为空")
             return
@@ -146,6 +164,12 @@ if not st.session_state.token:
 
 with st.sidebar:
     st.caption(f"当前用户:{st.session_state.user_id}")
+    st.caption(f"会话：{st.session_state.conversation_id}")
+    if st.button("新建会话"):
+        st.session_state.messages = []
+        st.session_state.pending_interrupt = None
+        st.session_state.conversation_id = uuid.uuid4().hex[:12]
+        st.rerun()
     if st.button("退出登录"):
         st.session_state.clear()
         st.rerun()

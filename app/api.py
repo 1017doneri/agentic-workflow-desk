@@ -49,6 +49,13 @@ from fastapi import Depends,HTTPException,status
 from fastapi.security import OAuth2PasswordBearer,OAuth2PasswordRequestForm
 from argon2 import PasswordHasher
 
+
+def _thread(kind:str,user:str,conv:str)->str:
+    return f"{kind}:{user}:{conv}"
+
+
+
+
 @asynccontextmanager
 async def lifespan(app:FastAPI):
     global customer_agent,refund_agent,supervisor_agent
@@ -197,15 +204,18 @@ async def login(form: OAuth2PasswordRequestForm = Depends()):
 
 class ChatRequest(BaseModel):
     question:str
+    conversation_id:str
 
 class ChatResponse(BaseModel):
     answer:str
     needs_approval:bool=False
+    conversation_id:str
 
 
 @app.post("/agent",response_model=ChatResponse)
 async def agent_chat(req:ChatRequest,current_user:str=Depends(get_current_user)):
-    config={"configurable":{"thread_id":f"agent_{current_user}"}}
+    conv=req.conversation_id or uuid.uuid4().hex[:12]
+    config={"configurable":{"thread_id":_thread("agent",current_user,conv)}}
     result=await supervisor_agent.ainvoke(
         {
             "messages":[HumanMessage(content=req.question)],
@@ -218,24 +228,30 @@ async def agent_chat(req:ChatRequest,current_user:str=Depends(get_current_user))
         info=result["__interrupt__"][0].value
         return ChatResponse(
             answer=f"[需要审批]{info.get('question','请审批')}\n政策核对：{info.get('policy_result','')}",
-            needs_approval=True
+            needs_approval=True,
+            conversation_id=conv
         )
     return ChatResponse(
         answer=result.get("worker_result",result["messages"][-1].content),
+        conversation_id=conv
     )
 
 
 class ApprovalRequest(BaseModel):
     decision:str=""
+    conversation_id:str
 
 @app.post("/agent/approval",response_model=ChatResponse)
 async def agent_approval(req:ApprovalRequest,current_user:str=Depends(get_current_user)):
-    config={"configurable":{"thread_id":f"agent_{current_user}"}}
+    config={"configurable":{"thread_id":_thread("agent",current_user,req.conversation_id)}}
+    state=await supervisor_agent.aget_state(config)
+    if not (state.tasks and state.tasks[0].interrupts):
+        raise HTTPException(409,"该会话没有待审批事项(可能已处理或会话号不对)")
     result=await supervisor_agent.ainvoke(
         Command(resume=req.decision),
         config
     )
-    return ChatResponse(answer=result.get("worker_result","处理完成"))
+    return ChatResponse(answer=result.get("worker_result","处理完成"),conversation_id=req.conversation_id)
 
 def sse_pack(event:str,data:dict)->str:
     return f"event:{event}\ndata:{json.dumps(data,ensure_ascii=False)}\n\n"
@@ -243,7 +259,8 @@ def sse_pack(event:str,data:dict)->str:
 
 @app.post("/chat",response_model=ChatResponse)
 async def chat(req:ChatRequest,current_user:str=Depends(get_current_user)):
-    config={"configurable":{"thread_id":f"chat_{current_user}"}}
+    conv=req.conversation_id or uuid.uuid4().hex[:12]
+    config={"configurable":{"thread_id":_thread("chat",current_user,conv)}}
     request_id=str(uuid.uuid4())[:8]
 
     result=await customer_agent.ainvoke(
@@ -256,18 +273,21 @@ async def chat(req:ChatRequest,current_user:str=Depends(get_current_user)):
         },
         config
     )
-    return ChatResponse(answer=result["messages"][-1].content)
+    return ChatResponse(answer=result["messages"][-1].content,conversation_id=conv)
 
 class RefundRequest(BaseModel):
     question:str
+    conversation_id:str
 
 class RefundResponse(BaseModel):
     answer:str
     needs_approval:bool=False
+    conversation_id:str
 
 @app.post("/refund",response_model=RefundResponse)
 async def refund(req:RefundRequest,current_user:str=Depends(get_current_user)):
-    config={"configurable":{"thread_id":f"refund_{current_user}"}}
+    conv=req.conversation_id or uuid.uuid4().hex[:12]
+    config={"configurable":{"thread_id":_thread("refund",current_user,conv)}}
 
     result=await refund_agent.ainvoke(
         init_state(req.question),
@@ -278,17 +298,20 @@ async def refund(req:RefundRequest,current_user:str=Depends(get_current_user)):
         info=result["__interrupt__"][0].value
         return RefundResponse(
             answer=f"[需要审批]{info['question']}\n政策核对：{info['policy_result']}",
-            needs_approval=True
+            needs_approval=True,
+            conversation_id=conv
         )
 
-    return RefundResponse(answer=result["final_result"])
+    return RefundResponse(answer=result["final_result"],conversation_id=conv)
 
 class RefundApprovalRequest(BaseModel):
     decision:str
+    conversation_id:str
 
 @app.post("/refund/approval",response_model=RefundResponse)
 async def refund_approval(req:RefundApprovalRequest,current_user:str=Depends(get_current_user)):
-    config={"configurable":{"thread_id":f"refund_{current_user}"}}
+    conv=req.conversation_id or uuid.uuid4().hex[:12]
+    config={"configurable":{"thread_id":_thread("refund",current_user,conv)}}
 
     result=await refund_agent.ainvoke(
         Command(resume=req.decision),
@@ -298,7 +321,8 @@ async def refund_approval(req:RefundApprovalRequest,current_user:str=Depends(get
 
 @app.post("/agent/stream")
 async def agent_stream(req:ChatRequest,current_user:str=Depends(get_current_user)):
-    thread_id=f"agent_{current_user}"
+    conv=req.conversation_id or uuid.uuid4().hex[:12]
+    thread_id=_thread("agent",current_user,conv)
 
     async def event_generator():
         config={"configurable":{"thread_id":thread_id}}
@@ -329,6 +353,7 @@ async def agent_stream(req:ChatRequest,current_user:str=Depends(get_current_user
                         yield sse_pack("interrupt",{
                             "question":info.get("question","请审批"),
                             "policy_result":info.get("policy_result",""),
+                            "conversation_id":conv,
                         })
             state=await supervisor_agent.aget_state(config)
             if not state.tasks or not state.tasks[0].interrupts:
@@ -337,11 +362,11 @@ async def agent_stream(req:ChatRequest,current_user:str=Depends(get_current_user
                     answer = state.values.get("worker_result", "")
                     if not answer and state.values.get("messages"):
                       answer=state.values["messages"][-1].content
-                yield sse_pack("done",{"answer":answer})
+                yield sse_pack("done",{"answer":answer,"conversation_id":conv})
 
         except Exception as e:
             traceback.print_exc()
-            yield sse_pack("error",{"message":str(e)})
+            yield sse_pack("error",{"message":str(e),"conversation_id":conv})
 
     return StreamingResponse(
         event_generator(),
