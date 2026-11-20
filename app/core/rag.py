@@ -2,9 +2,7 @@ import os
 from ..config import KNOWLEDGE_DIR,CHROMA_DIR
 
 from functools import lru_cache
-from sentence_transformers import SentenceTransformer
 import chromadb
-from sentence_transformers import SentenceTransformer
 import asyncio
 
 client=chromadb.PersistentClient(path=CHROMA_DIR)
@@ -12,7 +10,8 @@ collection=client.get_or_create_collection("knowledge")
 
 
 @lru_cache
-def get_embedder()->SentenceTransformer:
+def get_embedder():
+    from sentence_transformers import SentenceTransformer
     return SentenceTransformer("paraphrase-multilingual-MiniLM-L12-v2")
 
 def load_knowledge()->list[dict]:
@@ -57,11 +56,12 @@ def retrieve(query:str,recall_k:int=10)->list[dict]:
 
     return candidates
 
-from sentence_transformers import CrossEncoder
+
 
 
 @lru_cache
-def get_reranker()->CrossEncoder:
+def get_reranker():
+    from sentence_transformers import CrossEncoder
     return CrossEncoder("BAAI/bge-reranker-base")
 
 def rerank(query:str,candidates:list[dict],top_k:int)->list[dict]:
@@ -79,5 +79,5 @@ def search_knowledge(query:str,recall_k:int=10,top_k:int=3)->str:
 
 index_knowledge()
 
-async def asearch_knowledge(query:str,recall_k:int,top_k:int)->str:
-    return asyncio.to_thread(search_knowledge,query,recall_k,top_k)
+async def asearch_knowledge(query:str,recall_k:int=10,top_k:int=3)->str:
+    return await asyncio.to_thread(search_knowledge,query,recall_k,top_k)

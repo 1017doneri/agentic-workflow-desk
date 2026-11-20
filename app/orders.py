@@ -7,6 +7,8 @@ SEED_ORDERS = [
     ("A1003", "生鲜", 88.0, "已发货"),   # 生鲜，政策不同
     ("A1004", "电子", 800.0, "未发货"),  # 刚过阈值
     ("A1005", "服饰", 600.0, "已签收"),
+    ("A1006", "服饰", 500.0, "未发货"),
+    ("A1007", "服饰", 499.99, "未发货"),
 ]
 
 _pool=None
@@ -55,7 +57,7 @@ async def fetch_order(order_id:str)->dict|None:
 async def record_refund(order_id:str,thread_id:str,amount:float,decision:str)->bool:
     async with _pool.connection() as conn:
         cur=await conn.execute(
-            "INSERT INFO refund_events(order_id,thread_id,amount,decision)"
+            "INSERT INTO refund_events(order_id,thread_id,amount,decision)"
             "VALUES(%s,%s,%s,%s) ON CONFLICT (order_id) DO NOTHING RETURNING order_id",
             (order_id,thread_id,amount,decision),
         )

@@ -23,11 +23,13 @@ class RefundState(TypedDict):
     order_id:str
     refund_type: str
     amount: float
+    order_status:str
     policy_result: str
     needs_approval: bool
     approval: bool
     final_result: str
     refund_reason:str
+    refund_status:str
 
 def init_state(question:str)->RefundState:
     return {
@@ -110,6 +112,7 @@ async def load_order_node(state:RefundState):
     return {
         "refund_type": order["category"],
         "amount": float(order["amount"]),
+        "order_status": order["status"],
     }
 
 
@@ -158,7 +161,7 @@ async def policy_agent(state: RefundState):
     llm=get_llm()
     resp = await llm.ainvoke([
         SystemMessage(content=REWRITE_SYSTEM_PROMPT),
-        HumanMessage(content=f"用户请求：{user_msg}\n退款类型：{refund_type}\n退款金额：{amount}"),
+        HumanMessage(content=f"用户请求：{user_msg}\n退款类型：{refund_type}\n退款金额：{amount},订单状态：{state.get('order_status', '未知')}"),
     ])
     try:
         rewrite: QueryRewrite = rewrite_parser.parse(clean_json(resp.content))
@@ -184,6 +187,7 @@ async def policy_agent(state: RefundState):
             f"用户请求：{user_msg}\n"
             f"退款类型：{refund_type}\n"
             f"金额：{amount}元\n\n"
+            f"订单状态：{state.get('order_status', '未知')}"
             f"检索到的政策：\n{context_text}"
             ))
         ])
@@ -258,8 +262,20 @@ async def executor_node(state: RefundState,config:RunnableConfig):
     """执行退款操作"""
     if state.get("needs_approval") and not state.get("approval"):
         result = "退款申请未通过审批，已拒绝。"
+        print(f"[Executor] {result}")
+        return {
+            "final_result": result,
+            "messages": [AIMessage(content=result)],
+            "refund_status": "rejected",
+        }
     elif state["policy_result"] and "不符合" in state.get("policy_result",""):
         result = f"退款申请不符合政策：{state['policy_result']}"
+        print(f"[Executor] {result}")
+        return {
+            "final_result": result,
+            "messages": [AIMessage(content=result)],
+            "refund_status": "duplicate",
+        }
     else:
         thread_id =config["configurable"]["thread_id"]
         first_time=await record_refund(
@@ -269,12 +285,11 @@ async def executor_node(state: RefundState,config:RunnableConfig):
             result=f"订单{state['order_id']}已经退款过，请勿重复退款"
         else:
             result=f"退款{state['amount']}元已经处理，预计24小时内到账"
-
     print(f"[Executor] {result}")
-
     return {
         "final_result": result,
         "messages": [AIMessage(content=result)],
+        "refund_status": "approved",
     }
 
 
@@ -335,6 +350,7 @@ def init_state(question: str) -> RefundState:
         "messages": [HumanMessage(content=question)],
         "refund_type": "",
         "amount": 0.0,
+        "order_status":"",
         "policy_result": "",
         "needs_approval": False,
         "approval": False,
