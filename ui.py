@@ -24,7 +24,7 @@ def stream_agent(prompt:str,thread_id:str)->str:
     with httpx.stream(
         "POST",
         f"{API_BASE}/agent/stream",
-        json={"question":prompt,"conversation_id":st.session_state.conversation_id},
+        json={"question":prompt,"conversation_id":st.session_state.get("conversation_id")or ""},
         headers=headers,
         timeout=None
     )as response:
@@ -60,6 +60,7 @@ def stream_agent(prompt:str,thread_id:str)->str:
                     }
                 elif current_event=="done":
                     answer=payload.get("answer","")
+                    print(f"[DONE] answer_len={len(answer)}")
                     if answer:
                         yield answer
                     return
@@ -70,7 +71,7 @@ def stream_agent(prompt:str,thread_id:str)->str:
 
 def resume_agent(user_id:str,decision:str):
     headers = {"Authorization": f"Bearer {st.session_state.token}"}
-    conv=(st.session_state.get("pending_interrupt" or {}).get("conversation_id") or st.session_state.conversation_id)
+    conv=(st.session_state.get("pending_interrupt") or {}).get("conversation_id") or st.session_state.conversation_id
     resp=httpx.post(
         f"{API_BASE}/agent/approval",
         json={"decision":decision,"conversation_id":conv},
@@ -116,6 +117,28 @@ def resume_agent(user_id:str,decision:str):
 
 st.set_page_config(page_title="Agent Workflow Desk",page_icon="🤖")
 st.title("Agent Workflow Desk")
+
+_qp = st.query_params
+if "c" in _qp:
+    st.session_state.conversation_id = _qp["c"]
+elif "conversation_id" not in st.session_state:
+    st.session_state.conversation_id = uuid.uuid4().hex[:12]
+
+st.query_params["c"] = st.session_state.conversation_id
+
+if "messages" not in st.session_state:
+    st.session_state.messages=[]
+    try:
+        r=httpx.get(
+            f"{API_BASE}/agent/history",
+            params={"conversation_id":st.session_state.conversation_id},
+            headers={"Authorization":f"Bearer {st.session_state.token}"},
+            timeout=10
+        )
+        if r.status_code==200:
+            st.session_state.messages=r.json.get("messages",[])
+    except Exception:
+        pass
 
 if"token" not in st.session_state:
     st.session_state.token=None
@@ -174,8 +197,6 @@ with st.sidebar:
         st.session_state.clear()
         st.rerun()
 
-if "messages" not in st.session_state:
-    st.session_state.messages=[]
 
 
 for msg in st.session_state.messages:

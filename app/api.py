@@ -319,6 +319,23 @@ async def refund_approval(req:RefundApprovalRequest,current_user:str=Depends(get
     )
     return RefundResponse(answer=result["final_result"])
 
+@app.get("/agent/history")
+async def agent_history(
+        conversation_id:str,current_user:str=Depends(get_current_user),
+):
+    config={"configurable":{"thread_id":_thread("agent",current_user,conversation_id)}}
+    state=await supervisor_agent.aget_state(config)
+    msgs=state.values.get("messages",[])
+    return {
+        "conversation_id":conversation_id,
+        "pending":bool(state.tasks and state.tasks[0].interrupts),
+        "messages":[
+            {"role":"user" if m.type=="human" else "assistant","content":m.content}
+            for m in msgs
+            if getattr(m,"content","")
+        ],
+    }
+
 @app.post("/agent/stream")
 async def agent_stream(req:ChatRequest,current_user:str=Depends(get_current_user)):
     conv=req.conversation_id or uuid.uuid4().hex[:12]
